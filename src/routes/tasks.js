@@ -105,6 +105,49 @@ router.post('/bulk', (req, res) => {
   res.status(201).json({ created, count: created.length });
 });
 
+// GET /api/tasks/search - Search tasks by title and description
+router.get('/search', (req, res) => {
+  const { q } = req.query;
+
+  if (!q || q.trim() === '') {
+    return res.status(400).json({ error: 'q parameter is required' });
+  }
+
+  const pageNum = parseInt(req.query.page, 10);
+  const limitNum = parseInt(req.query.limit, 10);
+
+  if (
+    (req.query.page !== undefined && (isNaN(pageNum) || pageNum < 1)) ||
+    (req.query.limit !== undefined && (isNaN(limitNum) || limitNum < 1))
+  ) {
+    return res.status(400).json({ error: 'page and limit must be positive integers' });
+  }
+
+  const page = isNaN(pageNum) || pageNum < 1 ? 1 : pageNum;
+  const limit = isNaN(limitNum) || limitNum < 1 ? 20 : limitNum;
+
+  const pattern = `%${q}%`;
+  const baseQuery = 'SELECT * FROM tasks WHERE (title LIKE ? OR description LIKE ?)';
+  const countQuery = 'SELECT COUNT(*) AS count FROM tasks WHERE (title LIKE ? OR description LIKE ?)';
+
+  const total = getDb().prepare(countQuery).get(pattern, pattern).count;
+
+  const offset = (page - 1) * limit;
+  const tasks = getDb()
+    .prepare(`${baseQuery} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(pattern, pattern, limit, offset);
+
+  res.json({
+    data: tasks,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
+});
+
 // GET /api/tasks/:id
 router.get('/:id', (req, res) => {
   const task = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
