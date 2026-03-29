@@ -1,11 +1,43 @@
 const express = require('express');
 const router = express.Router();
+const { z } = require('zod');
 const { getDb } = require('../models/db');
+
+const createUserSchema = z.object({
+  name: z.string().min(1, 'name is required'),
+  email: z.string().min(1, 'email is required').email('email must be a valid email address'),
+});
 
 // GET /api/users
 router.get('/', (req, res) => {
-  const users = getDb().prepare('SELECT * FROM users ORDER BY created_at DESC').all();
-  res.json(users);
+  const pageNum = parseInt(req.query.page, 10);
+  const limitNum = parseInt(req.query.limit, 10);
+
+  if (
+    (req.query.page !== undefined && (isNaN(pageNum) || pageNum < 1)) ||
+    (req.query.limit !== undefined && (isNaN(limitNum) || limitNum < 1))
+  ) {
+    return res.status(400).json({ error: 'page and limit must be positive integers' });
+  }
+
+  const page = isNaN(pageNum) || pageNum < 1 ? 1 : pageNum;
+  const limit = isNaN(limitNum) || limitNum < 1 ? 20 : limitNum;
+
+  const total = getDb().prepare('SELECT COUNT(*) AS count FROM users').get().count;
+  const offset = (page - 1) * limit;
+  const users = getDb().prepare(
+    'SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?'
+  ).all(limit, offset);
+
+  res.json({
+    data: users,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
 });
 
 // GET /api/users/:id
@@ -17,9 +49,12 @@ router.get('/:id', (req, res) => {
 
 // POST /api/users
 router.post('/', (req, res) => {
-  const { name, email } = req.body;
+  const parsed = createUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ errors: parsed.error.flatten().fieldErrors });
+  }
 
-  // BUG: No validation - can create user with empty name/email
+  const { name, email } = parsed.data;
   const result = getDb().prepare(
     'INSERT INTO users (name, email) VALUES (?, ?)'
   ).run(name, email);

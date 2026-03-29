@@ -1,29 +1,108 @@
 const express = require('express');
 const router = express.Router();
+const { z } = require('zod');
 const { getDb } = require('../models/db');
+
+const createTaskSchema = z.object({
+  title: z.string().min(1, 'title is required'),
+  description: z.string().optional(),
+  status: z.enum(['todo', 'in_progress', 'done']).default('todo'),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+  assigned_to: z.number().optional(),
+});
 
 // GET /api/tasks - List all tasks
 router.get('/', (req, res) => {
   const { status, priority, assigned_to } = req.query;
-  let query = 'SELECT * FROM tasks WHERE 1=1';
+
+  const pageNum = parseInt(req.query.page, 10);
+  const limitNum = parseInt(req.query.limit, 10);
+
+  if (
+    (req.query.page !== undefined && (isNaN(pageNum) || pageNum < 1)) ||
+    (req.query.limit !== undefined && (isNaN(limitNum) || limitNum < 1))
+  ) {
+    return res.status(400).json({ error: 'page and limit must be positive integers' });
+  }
+
+  const page = isNaN(pageNum) || pageNum < 1 ? 1 : pageNum;
+  const limit = isNaN(limitNum) || limitNum < 1 ? 20 : limitNum;
+
+  let baseQuery = 'SELECT * FROM tasks WHERE 1=1';
   const params = [];
 
   if (status) {
-    query += ' AND status = ?';
+    baseQuery += ' AND status = ?';
     params.push(status);
   }
   if (priority) {
-    query += ' AND priority = ?';
+    baseQuery += ' AND priority = ?';
     params.push(priority);
   }
   if (assigned_to) {
-    query += ' AND assigned_to = ?';
+    baseQuery += ' AND assigned_to = ?';
     params.push(assigned_to);
   }
 
-  query += ' ORDER BY created_at DESC';
-  const tasks = getDb().prepare(query).all(...params);
-  res.json(tasks);
+  const countQuery = baseQuery.replace('SELECT *', 'SELECT COUNT(*) AS count');
+  const total = getDb().prepare(countQuery).get(...params).count;
+
+  const offset = (page - 1) * limit;
+  const tasks = getDb().prepare(
+    `${baseQuery} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+
+  res.json({
+    data: tasks,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
+});
+
+// POST /api/tasks/bulk - Create multiple tasks atomically
+router.post('/bulk', (req, res) => {
+  const bulkSchema = z.object({ tasks: z.array(createTaskSchema).min(1, 'tasks array must not be empty') });
+
+  const parsed = bulkSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const fieldErrors = parsed.error.flatten().fieldErrors;
+    const taskErrors = parsed.error.issues
+      .filter((issue) => issue.path[0] === 'tasks' && typeof issue.path[1] === 'number')
+      .reduce((acc, issue) => {
+        const idx = issue.path[1];
+        if (!acc[idx]) acc[idx] = {};
+        const field = issue.path[2] || '_';
+        acc[idx][field] = issue.message;
+        return acc;
+      }, {});
+
+    return res.status(400).json({
+      error: 'Validation failed',
+      fieldErrors,
+      taskErrors,
+    });
+  }
+
+  const tasks = parsed.data.tasks;
+  const db = getDb();
+
+  const insert = db.prepare(
+    'INSERT INTO tasks (title, description, status, priority, assigned_to) VALUES (?, ?, ?, ?, ?)'
+  );
+
+  const insertMany = db.transaction((taskList) => {
+    return taskList.map(({ title, description, status, priority, assigned_to }) => {
+      const result = insert.run(title, description, status, priority, assigned_to);
+      return db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
+    });
+  });
+
+  const created = insertMany(tasks);
+  res.status(201).json({ created, count: created.length });
 });
 
 // GET /api/tasks/:id
@@ -35,12 +114,15 @@ router.get('/:id', (req, res) => {
 
 // POST /api/tasks
 router.post('/', (req, res) => {
-  const { title, description, status, priority, assigned_to } = req.body;
+  const parsed = createTaskSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ errors: parsed.error.flatten().fieldErrors });
+  }
 
-  // BUG: No input validation at all!
+  const { title, description, status, priority, assigned_to } = parsed.data;
   const result = getDb().prepare(
     'INSERT INTO tasks (title, description, status, priority, assigned_to) VALUES (?, ?, ?, ?, ?)'
-  ).run(title, description, status || 'todo', priority || 'medium', assigned_to);
+  ).run(title, description, status, priority, assigned_to);
 
   const task = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(task);
@@ -52,9 +134,8 @@ router.put('/:id', (req, res) => {
   const existing = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
 
-  // BUG: updated_at is never actually updated
   getDb().prepare(
-    'UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, assigned_to = ? WHERE id = ?'
+    'UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
   ).run(
     title || existing.title,
     description || existing.description,
