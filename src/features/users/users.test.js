@@ -1,12 +1,12 @@
 /**
- * Tests for GET endpoints in /api/users.
+ * Tests for user CRUD endpoints: GET /api/users, GET /api/users/:id,
+ * POST /api/users, and GET /api/users/:id/tasks.
  *
- * Same isolation strategy as tasks.test.js: mock db.js to use an in-memory
- * SQLite database before requiring the app.  Each test file gets its own Jest
- * module registry, so the two files do not share state.
+ * Database isolation: jest.mock() replaces shared/db before any module loads,
+ * substituting an in-memory SQLite database so tests never touch data.db.
  */
 
-jest.mock('../src/models/db', () => {
+jest.mock('../../shared/db', () => {
   const Database = require('better-sqlite3');
   const mockDatabase = Database(':memory:');
 
@@ -40,8 +40,8 @@ jest.mock('../src/models/db', () => {
 });
 
 const request = require('supertest');
-const app = require('../src/index');
-const { initDb, getDb } = require('../src/models/db');
+const app = require('../../app');
+const { initDb, getDb } = require('../../shared/db');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -130,6 +130,138 @@ describe('GET /api/users/:id', () => {
     const res = await request(app).get('/api/users/99999');
     expect(res.status).toBe(404);
     expect(res.body).toHaveProperty('error', 'User not found');
+  });
+});
+
+// ─── POST /api/users ──────────────────────────────────────────────────────────
+
+describe('POST /api/users', () => {
+  afterEach(() => {
+    // Remove only users added during these tests (not Alice or Bob).
+    const db = getDb();
+    db.prepare("DELETE FROM users WHERE name NOT IN ('Alice', 'Bob')").run();
+  });
+
+  it('successfully creates a user with valid data', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ name: 'Charlie', email: 'charlie@example.com' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty('id');
+    expect(res.body.name).toBe('Charlie');
+    expect(res.body.email).toBe('charlie@example.com');
+    expect(res.body).toHaveProperty('created_at');
+  });
+
+  it('returns 400 when name is missing', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ email: 'noname@example.com' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('name');
+  });
+
+  it('returns 400 when email is missing', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ name: 'No Email' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('email');
+  });
+
+  it('returns 400 when email is in an invalid format', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ name: 'Bad Email', email: 'not-an-email' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('email');
+  });
+
+  it('returns 409 when email is a duplicate', async () => {
+    // Insert first user.
+    await request(app)
+      .post('/api/users')
+      .send({ name: 'Dupe User', email: 'dupe@example.com' });
+
+    // Attempt duplicate.
+    const res = await request(app)
+      .post('/api/users')
+      .send({ name: 'Dupe Clone', email: 'dupe@example.com' });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toHaveProperty('error');
+  });
+});
+
+// ─── POST /api/users/:id/notify ──────────────────────────────────────────────
+
+describe('POST /api/users/:id/notify', () => {
+  it('returns 200 and a notification receipt when the user exists and body is valid', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: 'Hello', message: 'Welcome aboard!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      sent: true,
+      to: 'alice@example.com',
+      subject: 'Hello',
+    });
+    expect(res.body).toHaveProperty('timestamp');
+  });
+
+  it('returns 404 when the user does not exist', async () => {
+    const res = await request(app)
+      .post('/api/users/99999/notify')
+      .send({ subject: 'Hello', message: 'Ghost mail' });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toHaveProperty('error', 'User not found');
+  });
+
+  it('returns 400 when subject is missing', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ message: 'No subject here' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('subject');
+  });
+
+  it('returns 400 when message is missing', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: 'No message here' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('message');
+  });
+
+  it('returns 400 when subject is an empty string', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: '', message: 'Valid message' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toHaveProperty('subject');
+  });
+
+  it('returns 400 when message is an empty string', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: 'Valid subject', message: '' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toHaveProperty('message');
   });
 });
 
