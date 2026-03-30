@@ -4,6 +4,12 @@ const { getDb } = require('../../shared/db');
 const { createTaskSchema } = require('./validation');
 const { parsePagination, paginatedResponse } = require('../../shared/pagination');
 
+const ALLOWED_SORT_BY = ['created_at', 'updated_at', 'priority', 'status', 'title'];
+const ALLOWED_ORDER = ['asc', 'desc'];
+
+const PRIORITY_CASE =
+  "CASE priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 END";
+
 // GET /api/tasks - List all tasks with optional filters
 router.get('/', (req, res) => {
   const pagination = parsePagination(req, res);
@@ -11,6 +17,20 @@ router.get('/', (req, res) => {
   const { page, limit } = pagination;
 
   const { status, priority, assigned_to } = req.query;
+
+  const sort_by = req.query.sort_by || 'created_at';
+  const order = (req.query.order || 'desc').toLowerCase();
+
+  if (!ALLOWED_SORT_BY.includes(sort_by)) {
+    return res.status(400).json({
+      error: `Invalid sort_by value. Allowed values: ${ALLOWED_SORT_BY.join(', ')}`,
+    });
+  }
+  if (!ALLOWED_ORDER.includes(order)) {
+    return res.status(400).json({
+      error: `Invalid order value. Allowed values: ${ALLOWED_ORDER.join(', ')}`,
+    });
+  }
 
   let baseQuery = 'SELECT * FROM tasks WHERE 1=1';
   const params = [];
@@ -28,12 +48,19 @@ router.get('/', (req, res) => {
     params.push(assigned_to);
   }
 
+  // For priority, the CASE ranks critical=1 (most severe) through low=4 (least severe).
+  // So "desc" severity (critical first) maps to ASC on the rank, and vice-versa.
+  const orderClause =
+    sort_by === 'priority'
+      ? `${PRIORITY_CASE} ${order === 'desc' ? 'ASC' : 'DESC'}`
+      : `${sort_by} ${order.toUpperCase()}`;
+
   const countQuery = baseQuery.replace('SELECT *', 'SELECT COUNT(*) AS count');
   const total = getDb().prepare(countQuery).get(...params).count;
 
   const offset = (page - 1) * limit;
   const tasks = getDb()
-    .prepare(`${baseQuery} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .prepare(`${baseQuery} ORDER BY ${orderClause} LIMIT ? OFFSET ?`)
     .all(...params, limit, offset);
 
   res.json(paginatedResponse(tasks, page, limit, total));

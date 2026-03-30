@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../../shared/db');
-const { createUserSchema } = require('./validation');
+const { createUserSchema, notifyUserSchema } = require('./validation');
 const { parsePagination, paginatedResponse } = require('../../shared/pagination');
+const { sendNotification } = require('./notifications');
 
 // GET /api/users
 router.get('/', (req, res) => {
@@ -40,6 +41,21 @@ router.post('/', (req, res) => {
 
   const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(user);
+});
+
+// POST /api/users/:id/notify
+router.post('/:id/notify', (req, res) => {
+  const parsed = notifyUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ errors: parsed.error.flatten().fieldErrors });
+  }
+
+  const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const { subject, message } = parsed.data;
+  const result = sendNotification(user.email, subject, message);
+  res.json(result);
 });
 
 // GET /api/users/:id/tasks

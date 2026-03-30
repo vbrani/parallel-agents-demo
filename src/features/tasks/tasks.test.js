@@ -65,6 +65,10 @@ function seedData() {
     'INSERT INTO tasks (title, description, status, priority, assigned_to) VALUES (?, ?, ?, ?, ?)'
   ).run('Task Three', 'Third task', 'done', 'low', null);
 
+  db.prepare(
+    'INSERT INTO tasks (title, description, status, priority, assigned_to) VALUES (?, ?, ?, ?, ?)'
+  ).run('Task Four', 'Fourth task', 'todo', 'critical', null);
+
   return { userId };
 }
 
@@ -102,8 +106,8 @@ describe('GET /api/tasks', () => {
     const res = await request(app).get('/api/tasks');
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
-    expect(res.body.data.length).toBe(3);
-    expect(res.body.pagination).toMatchObject({ page: 1, total: 3 });
+    expect(res.body.data.length).toBe(4);
+    expect(res.body.pagination).toMatchObject({ page: 1, total: 4 });
   });
 
   it('each task has the expected fields', async () => {
@@ -118,8 +122,8 @@ describe('GET /api/tasks', () => {
   it('filters by status=todo', async () => {
     const res = await request(app).get('/api/tasks?status=todo');
     expect(res.status).toBe(200);
-    expect(res.body.data.length).toBe(1);
-    expect(res.body.data[0].status).toBe('todo');
+    expect(res.body.data.length).toBe(2);
+    expect(res.body.data.every((t) => t.status === 'todo')).toBe(true);
   });
 
   it('filters by status=in_progress', async () => {
@@ -170,6 +174,81 @@ describe('GET /api/tasks', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
     expect(res.body.data.length).toBe(0);
+  });
+});
+
+// ─── GET /api/tasks — sorting ─────────────────────────────────────────────────
+
+describe('GET /api/tasks sorting', () => {
+  it('returns 400 for an invalid sort_by value', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=invalid');
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('returns 400 for an invalid order value', async () => {
+    const res = await request(app).get('/api/tasks?order=sideways');
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('sorts by title asc', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=title&order=asc');
+    expect(res.status).toBe(200);
+    const titles = res.body.data.map((t) => t.title);
+    expect(titles).toEqual([...titles].sort());
+  });
+
+  it('sorts by title desc', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=title&order=desc');
+    expect(res.status).toBe(200);
+    const titles = res.body.data.map((t) => t.title);
+    expect(titles).toEqual([...titles].sort().reverse());
+  });
+
+  it('sorts by status asc', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=status&order=asc');
+    expect(res.status).toBe(200);
+    const statuses = res.body.data.map((t) => t.status);
+    expect(statuses).toEqual([...statuses].sort());
+  });
+
+  it('sorts by priority using severity order (critical > high > medium > low) desc', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=priority&order=desc');
+    expect(res.status).toBe(200);
+    const priorities = res.body.data.map((t) => t.priority);
+    const severityRank = { critical: 1, high: 2, medium: 3, low: 4 };
+    for (let i = 0; i < priorities.length - 1; i++) {
+      expect(severityRank[priorities[i]]).toBeLessThanOrEqual(severityRank[priorities[i + 1]]);
+    }
+  });
+
+  it('sorts by priority using severity order asc (low > medium > high > critical)', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=priority&order=asc');
+    expect(res.status).toBe(200);
+    const priorities = res.body.data.map((t) => t.priority);
+    const severityRank = { critical: 1, high: 2, medium: 3, low: 4 };
+    for (let i = 0; i < priorities.length - 1; i++) {
+      expect(severityRank[priorities[i]]).toBeGreaterThanOrEqual(severityRank[priorities[i + 1]]);
+    }
+  });
+
+  it('defaults to sort_by=created_at and order=desc', async () => {
+    const res = await request(app).get('/api/tasks');
+    expect(res.status).toBe(200);
+    const createdAts = res.body.data.map((t) => t.created_at);
+    // In-memory SQLite inserts in the same tick so timestamps may be equal —
+    // verify that the list is not in strictly ascending order (i.e. not reversed).
+    const sorted = [...createdAts].sort().reverse();
+    expect(createdAts).toEqual(sorted);
+  });
+
+  it('sorts by created_at asc', async () => {
+    const res = await request(app).get('/api/tasks?sort_by=created_at&order=asc');
+    expect(res.status).toBe(200);
+    const createdAts = res.body.data.map((t) => t.created_at);
+    const sorted = [...createdAts].sort();
+    expect(createdAts).toEqual(sorted);
   });
 });
 

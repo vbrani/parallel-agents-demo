@@ -200,6 +200,71 @@ describe('POST /api/users', () => {
   });
 });
 
+// ─── POST /api/users/:id/notify ──────────────────────────────────────────────
+
+describe('POST /api/users/:id/notify', () => {
+  it('returns 200 and a notification receipt when the user exists and body is valid', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: 'Hello', message: 'Welcome aboard!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      sent: true,
+      to: 'alice@example.com',
+      subject: 'Hello',
+    });
+    expect(res.body).toHaveProperty('timestamp');
+  });
+
+  it('returns 404 when the user does not exist', async () => {
+    const res = await request(app)
+      .post('/api/users/99999/notify')
+      .send({ subject: 'Hello', message: 'Ghost mail' });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toHaveProperty('error', 'User not found');
+  });
+
+  it('returns 400 when subject is missing', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ message: 'No subject here' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('subject');
+  });
+
+  it('returns 400 when message is missing', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: 'No message here' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('message');
+  });
+
+  it('returns 400 when subject is an empty string', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: '', message: 'Valid message' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toHaveProperty('subject');
+  });
+
+  it('returns 400 when message is an empty string', async () => {
+    const res = await request(app)
+      .post(`/api/users/${seededUserId}/notify`)
+      .send({ subject: 'Valid subject', message: '' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toHaveProperty('message');
+  });
+});
+
 // ─── GET /api/users/:id/tasks ─────────────────────────────────────────────────
 
 describe('GET /api/users/:id/tasks', () => {

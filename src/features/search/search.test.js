@@ -136,4 +136,92 @@ describe('GET /api/tasks/search', () => {
     expect(res.status).toBe(400);
     expect(res.body).toHaveProperty('error', 'page and limit must be positive integers');
   });
+
+  // ─── Multi-word search (AND logic — default / match=all) ──────────────────
+
+  it('multi-word search with match=all returns only tasks matching ALL words', async () => {
+    // "fix bug" — both words appear in title "Fix login bug"
+    const res = await request(app).get('/api/tasks/search?q=fix%20bug');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBe(1);
+    expect(res.body.data[0].title).toBe('Fix login bug');
+  });
+
+  it('multi-word search with match=all returns no results when not all words are present', async () => {
+    // "fix readme" — no single task has both "fix" and "readme"
+    const res = await request(app).get('/api/tasks/search?q=fix%20readme&match=all');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBe(0);
+  });
+
+  it('explicit match=all behaves the same as the default', async () => {
+    const resDefault = await request(app).get('/api/tasks/search?q=fix%20bug');
+    const resExplicit = await request(app).get('/api/tasks/search?q=fix%20bug&match=all');
+    expect(resDefault.status).toBe(200);
+    expect(resExplicit.status).toBe(200);
+    expect(resDefault.body.data.length).toBe(resExplicit.body.data.length);
+    expect(resDefault.body.data.map(t => t.id)).toEqual(resExplicit.body.data.map(t => t.id));
+  });
+
+  // ─── Multi-word search (OR logic — match=any) ─────────────────────────────
+
+  it('multi-word search with match=any returns tasks matching ANY word', async () => {
+    // "fix readme" — "fix" matches "Fix login bug", "readme" matches "Update documentation"
+    const res = await request(app).get('/api/tasks/search?q=fix%20readme&match=any');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBe(2);
+    const titles = res.body.data.map(t => t.title);
+    expect(titles).toContain('Fix login bug');
+    expect(titles).toContain('Update documentation');
+  });
+
+  it('match=any with a single word behaves like a normal search', async () => {
+    const res = await request(app).get('/api/tasks/search?q=login&match=any');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBe(1);
+    expect(res.body.data[0].title).toBe('Fix login bug');
+  });
+
+  // ─── Highlights ───────────────────────────────────────────────────────────
+
+  it('each result includes a highlights field', async () => {
+    const res = await request(app).get('/api/tasks/search?q=login');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const task of res.body.data) {
+      expect(task).toHaveProperty('highlights');
+      expect(task.highlights).toHaveProperty('title');
+      expect(task.highlights).toHaveProperty('description');
+      expect(Array.isArray(task.highlights.title)).toBe(true);
+      expect(Array.isArray(task.highlights.description)).toBe(true);
+    }
+  });
+
+  it('highlights.title contains the matched word when it appears in title', async () => {
+    const res = await request(app).get('/api/tasks/search?q=login');
+    expect(res.status).toBe(200);
+    const task = res.body.data.find(t => t.title === 'Fix login bug');
+    expect(task).toBeDefined();
+    expect(task.highlights.title).toContain('login');
+  });
+
+  it('highlights.description contains the matched word when it appears in description', async () => {
+    // "credentials" only appears in the description of "Fix login bug"
+    const res = await request(app).get('/api/tasks/search?q=credentials');
+    expect(res.status).toBe(200);
+    const task = res.body.data.find(t => t.title === 'Fix login bug');
+    expect(task).toBeDefined();
+    expect(task.highlights.description).toContain('credentials');
+    expect(task.highlights.title).not.toContain('credentials');
+  });
+
+  it('highlights lists all matching words across both fields', async () => {
+    // "fix credentials" — "fix" in title, "credentials" in description of "Fix login bug"
+    const res = await request(app).get('/api/tasks/search?q=fix%20credentials&match=all');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBe(1);
+    const task = res.body.data[0];
+    expect(task.highlights.title).toContain('fix');
+    expect(task.highlights.description).toContain('credentials');
+  });
 });
