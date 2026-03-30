@@ -1,18 +1,12 @@
 /**
- * Tests for GET endpoints in /api/tasks and /health.
+ * Tests for task CRUD endpoints: GET /api/tasks, GET /api/tasks/:id,
+ * POST /api/tasks, PUT /api/tasks/:id, DELETE /api/tasks/:id, and GET /health.
  *
- * Database isolation strategy: jest.mock() replaces db.js before any module
- * is loaded.  The factory creates an in-memory SQLite database so tests never
- * touch data.db.  Jest hoists jest.mock() calls; variables accessed inside the
- * factory must be prefixed with "mock" to bypass the scope restriction.
+ * Database isolation: jest.mock() replaces shared/db before any module loads,
+ * substituting an in-memory SQLite database so tests never touch data.db.
  */
 
-// The `mock` prefix is required so Jest's babel hoisting allows the variable
-// to be accessed inside the jest.mock() factory.
-const mockDb = require('better-sqlite3')(':memory:');
-
-jest.mock('../src/models/db', () => {
-  // `require` is available inside the factory even after hoisting.
+jest.mock('../../shared/db', () => {
   const Database = require('better-sqlite3');
   const mockDatabase = Database(':memory:');
 
@@ -46,8 +40,8 @@ jest.mock('../src/models/db', () => {
 });
 
 const request = require('supertest');
-const app = require('../src/index');
-const { initDb, getDb } = require('../src/models/db');
+const app = require('../../app');
+const { initDb, getDb } = require('../../shared/db');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -200,6 +194,140 @@ describe('GET /api/tasks/:id', () => {
 
   it('returns 404 with error message when task does not exist', async () => {
     const res = await request(app).get('/api/tasks/99999');
+    expect(res.status).toBe(404);
+    expect(res.body).toHaveProperty('error', 'Task not found');
+  });
+});
+
+// ─── POST /api/tasks ──────────────────────────────────────────────────────────
+
+describe('POST /api/tasks', () => {
+  afterEach(() => {
+    // Clean up only newly created tasks, keeping seeded ones.
+    // We identify seeded tasks by their known titles.
+    const db = getDb();
+    db.prepare(
+      "DELETE FROM tasks WHERE title NOT IN ('Task One', 'Task Two', 'Task Three')"
+    ).run();
+  });
+
+  it('successfully creates a task with valid data', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: 'New Task', description: 'A test task', status: 'in_progress', priority: 'high' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty('id');
+    expect(res.body.title).toBe('New Task');
+    expect(res.body.description).toBe('A test task');
+    expect(res.body.status).toBe('in_progress');
+    expect(res.body.priority).toBe('high');
+  });
+
+  it('applies default status=todo and priority=medium when omitted', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: 'Minimal Task' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe('todo');
+    expect(res.body.priority).toBe('medium');
+  });
+
+  it('returns 400 when title is missing', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ description: 'No title here', status: 'todo', priority: 'low' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('title');
+  });
+
+  it('returns 400 when title is an empty string', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: '' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('title');
+  });
+
+  it('returns 400 when status is an invalid value', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: 'Task', status: 'invalid_status' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('status');
+  });
+
+  it('returns 400 when priority is an invalid value', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: 'Task', priority: 'urgent' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('errors');
+    expect(res.body.errors).toHaveProperty('priority');
+  });
+});
+
+// ─── PUT /api/tasks/:id ───────────────────────────────────────────────────────
+
+describe('PUT /api/tasks/:id', () => {
+  let taskId;
+
+  beforeAll(async () => {
+    const res = await request(app).get('/api/tasks?status=todo');
+    taskId = res.body.data[0].id;
+  });
+
+  it('updates a task and returns the updated task', async () => {
+    const res = await request(app)
+      .put(`/api/tasks/${taskId}`)
+      .send({ title: 'Updated Task', status: 'done' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(taskId);
+    expect(res.body.title).toBe('Updated Task');
+    expect(res.body.status).toBe('done');
+  });
+
+  it('returns 404 when the task does not exist', async () => {
+    const res = await request(app)
+      .put('/api/tasks/99999')
+      .send({ title: 'Ghost Task' });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toHaveProperty('error', 'Task not found');
+  });
+});
+
+// ─── DELETE /api/tasks/:id ────────────────────────────────────────────────────
+
+describe('DELETE /api/tasks/:id', () => {
+  let tempTaskId;
+
+  beforeEach(async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: 'Temp Task To Delete' });
+    tempTaskId = res.body.id;
+  });
+
+  it('deletes a task and returns 204', async () => {
+    const res = await request(app).delete(`/api/tasks/${tempTaskId}`);
+    expect(res.status).toBe(204);
+
+    const check = await request(app).get(`/api/tasks/${tempTaskId}`);
+    expect(check.status).toBe(404);
+  });
+
+  it('returns 404 when the task does not exist', async () => {
+    const res = await request(app).delete('/api/tasks/99999');
     expect(res.status).toBe(404);
     expect(res.body).toHaveProperty('error', 'Task not found');
   });
